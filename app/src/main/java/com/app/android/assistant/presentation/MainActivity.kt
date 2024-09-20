@@ -115,6 +115,8 @@ fun WearApp(
         }
     }
 
+    val receivedMessage: StringBuilder by remember { mutableStateOf(StringBuilder()) }
+
     DisposableEffect(Unit) {
         onDispose {
             textToSpeech?.shutdown()
@@ -137,17 +139,22 @@ fun WearApp(
             Log.d("SocketIO", "Connected to the server")
             // Successfully connected
             buttonState = ButtonState.Connected
+            socket.emit("register", "client")
         }?.on(Socket.EVENT_DISCONNECT) {
             // Handle disconnect
             buttonState = ButtonState.Connecting // or another state based on your logic
         }?.on("chat_stream") {
             // Handle incoming messages
             val message = it[0] as String
-            Log.d("SocketIO", "Received message: $message")
             if (message.isNotEmpty()) {
                 Log.d("SocketIO", "Received message: $message")
-                buttonState = ButtonState.Connected
-                textToSpeech?.speak(textForVoiceInput, TextToSpeech.QUEUE_FLUSH, null, null)
+                if (message != "-SOM-" && message != "-EOM-") {
+                    receivedMessage.append(message)
+                } else if (message == "-EOM-") {
+                    buttonState = ButtonState.Connected
+                    textToSpeech?.speak(receivedMessage, TextToSpeech.QUEUE_FLUSH, null, null)
+                    receivedMessage.clear()
+                }
             }
         }
 
