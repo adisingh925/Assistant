@@ -207,7 +207,7 @@ fun WearApp(
                         buttonState = ButtonState.Processing
                     }
 
-                    ButtonState.Processing -> buttonState = ButtonState.Connecting
+                    ButtonState.Processing -> Unit
                 }
             }
         )
