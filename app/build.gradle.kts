@@ -63,4 +63,5 @@ dependencies {
     debugImplementation(libs.ui.test.manifest)
     implementation(libs.material.icons.extended)
     implementation(libs.socket.io.client)
+    implementation(libs.okhttp)
 }

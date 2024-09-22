@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
 import android.speech.RecognizerIntent
@@ -52,7 +53,18 @@ import androidx.wear.compose.material.ButtonDefaults
 import androidx.wear.compose.material.Icon
 import io.socket.client.IO
 import io.socket.client.Socket
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.Response
+import org.json.JSONObject
+import java.io.File
+import java.io.IOException
 import java.util.Locale
+
 
 class MainActivity : ComponentActivity() {
 
@@ -89,6 +101,9 @@ fun WearApp(
 ) {
     var buttonState by remember { mutableStateOf(ButtonState.Connecting) }
     var textForVoiceInput by remember { mutableStateOf("") }
+    val receivedMessage: StringBuilder by remember { mutableStateOf(StringBuilder()) }
+    var textToSpeech: TextToSpeech? by remember { mutableStateOf(null) }
+
     val socket = remember {
         try {
             val options = IO.Options().apply {
@@ -101,8 +116,6 @@ fun WearApp(
             null
         }
     }
-
-    var textToSpeech: TextToSpeech? by remember { mutableStateOf(null) }
 
     val voiceIntent: Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
         putExtra(
@@ -126,8 +139,6 @@ fun WearApp(
             }
         }
     }
-
-    val receivedMessage: StringBuilder by remember { mutableStateOf(StringBuilder()) }
 
     DisposableEffect(Unit) {
         onDispose {
@@ -164,8 +175,14 @@ fun WearApp(
                 if (message != "-SOM-" && message != "-EOM-") {
                     receivedMessage.append(message)
                 } else if (message == "-EOM-") {
+                    streamTextToSpeech(
+                        "sk_62b236b81ca03a60812a8c1e92e6f28c985c7daa665fc10e",
+                        receivedMessage.toString(), "9BWtsMINqrJLrRacOk9x"
+                    ) { byteArray ->
+                        playAudio(byteArray)
+                    }
                     buttonState = ButtonState.Connected
-                    textToSpeech?.speak(receivedMessage, TextToSpeech.QUEUE_FLUSH, null, null)
+//                    textToSpeech?.speak(receivedMessage, TextToSpeech.QUEUE_FLUSH, null, null)
                     receivedMessage.clear()
                 }
             }
@@ -311,4 +328,75 @@ enum class ButtonState {
     Connected,
     Recording,
     Processing
+}
+
+fun streamTextToSpeech(
+    apiKey: String,
+    text: String,
+    voiceId: String,
+    onStreamReady: (byteArray: ByteArray?) -> Unit
+) {
+    val client = OkHttpClient()
+
+    val jsonBody = JSONObject()
+    jsonBody.put("text", text)
+
+    val voiceSettings = JSONObject()
+    voiceSettings.put("similarity_boost", 1)
+    voiceSettings.put("stability", 1)
+
+    jsonBody.put("voice_settings", voiceSettings)
+
+    val request = Request.Builder()
+        .url("https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream")
+        .addHeader("xi-api-key", apiKey)
+        .addHeader("content-type", "application/json")
+        .post(RequestBody.create("application/json".toMediaTypeOrNull(), jsonBody.toString()))
+        .build()
+
+    client.newCall(request).enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            Log.e("TTS-Error", "Request failed: ${e.message}")
+            onStreamReady(null)
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            if (response.isSuccessful) {
+                response.body?.byteStream()?.use { inputStream ->
+                    val byteArray = inputStream.readBytes() // Read the input stream into a byte array
+                    onStreamReady(byteArray)
+                }
+            } else {
+                Log.e("TTS-Error", "Failed to retrieve TTS stream: ${response.message}")
+                onStreamReady(null)
+            }
+        }
+    })
+}
+
+// Function to play the audio from the received URL
+fun playAudio(byteArray: ByteArray?) {
+    byteArray?.let {
+        try {
+            val mediaPlayer = MediaPlayer()
+            // Create a temporary file to hold the audio
+            val tempFile = File.createTempFile("tts_audio", ".mp3").apply {
+                deleteOnExit() // Ensure it's deleted when the app exits
+            }
+
+            tempFile.outputStream().use { outputStream ->
+                outputStream.write(it) // Write the byte array to the file
+            }
+
+            mediaPlayer.setDataSource(tempFile.absolutePath)
+            mediaPlayer.prepareAsync()
+            mediaPlayer.setOnPreparedListener { player ->
+                player.start()
+            }
+        } catch (e: Exception) {
+            Log.e("MediaPlayerError", "Error playing audio: ${e.localizedMessage}")
+        }
+    } ?: run {
+        Log.e("TTS", "Audio byte array is null, cannot play audio.")
+    }
 }
