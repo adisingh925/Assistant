@@ -104,6 +104,18 @@ fun WearApp(
 
     var textToSpeech: TextToSpeech? by remember { mutableStateOf(null) }
 
+    val voiceIntent: Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+        putExtra(
+            RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+        )
+
+        putExtra(
+            RecognizerIntent.EXTRA_PROMPT,
+            "test"
+        )
+    }
+
     LaunchedEffect(Unit) {
         textToSpeech = TextToSpeech(context) { status ->
             if (status == TextToSpeech.SUCCESS) {
@@ -138,7 +150,8 @@ fun WearApp(
         socket?.on(Socket.EVENT_CONNECT) {
             Log.d("SocketIO", "Connected to the server")
             // Successfully connected
-            buttonState = ButtonState.Connected
+            voiceLauncher.launch(voiceIntent)
+            buttonState = ButtonState.Recording
             socket.emit("register", "client")
         }?.on(Socket.EVENT_DISCONNECT) {
             // Handle disconnect
@@ -180,18 +193,6 @@ fun WearApp(
             currentState = buttonState,
             onClick = {
                 // Cycle through states on each click
-                val voiceIntent: Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                    putExtra(
-                        RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-                    )
-
-                    putExtra(
-                        RecognizerIntent.EXTRA_PROMPT,
-                        "test"
-                    )
-                }
-
                 when (buttonState) {
                     ButtonState.Connecting ->  // Do nothing
                         Unit
