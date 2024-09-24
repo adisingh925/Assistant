@@ -4,11 +4,15 @@ import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.drawable.Icon
 import android.location.Location
 import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
 import android.speech.RecognizerIntent
+import android.util.Base64
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -23,7 +27,9 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -47,8 +53,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathFillType
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.PathBuilder
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -260,6 +269,7 @@ fun WearApp(
     var buttonState by remember { mutableStateOf(ButtonState.Connecting) }
     var textForVoiceInput by remember { mutableStateOf("") }
     val receivedMessage: StringBuilder by remember { mutableStateOf(StringBuilder()) }
+    var bitmapImage by remember { mutableStateOf<Bitmap?>(null) } // State to hold the bitmap image
 
     val socket = remember {
         try {
@@ -275,22 +285,14 @@ fun WearApp(
     }
 
     val voiceIntent: Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-        putExtra(
-            RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-            RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-        )
-
-        putExtra(
-            RecognizerIntent.EXTRA_PROMPT,
-            "test"
-        )
+        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+        putExtra(RecognizerIntent.EXTRA_PROMPT, "test")
     }
 
     val voiceLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { activityResult ->
         if (activityResult.resultCode == Activity.RESULT_CANCELED) {
-            // Handle the case where the user canceled the activity
             Log.d("VoiceInput", "Voice input canceled.")
             buttonState = ButtonState.Connected
         } else if (activityResult.resultCode == Activity.RESULT_OK) {
@@ -305,15 +307,12 @@ fun WearApp(
         // Handle socket events
         socket?.on(Socket.EVENT_CONNECT) {
             Log.d("SocketIO", "Connected to the server")
-            // Successfully connected
             voiceLauncher.launch(voiceIntent)
             buttonState = ButtonState.Recording
             socket.emit("register", "client")
         }?.on(Socket.EVENT_DISCONNECT) {
-            // Handle disconnect
             buttonState = ButtonState.Connecting
         }?.on("chat_stream") {
-            // Handle incoming messages
             val message = it[0] as String
             if (message.isNotEmpty()) {
                 Log.d("SocketIO", "Received message: $message")
@@ -324,16 +323,30 @@ fun WearApp(
                         "sk_62b236b81ca03a60812a8c1e92e6f28c985c7daa665fc10e",
                         receivedMessage.toString(), "9BWtsMINqrJLrRacOk9x"
                     ) { byteArray ->
-                        playAudio(byteArray)
+                        playAudio(byteArray) {
+                            buttonState = ButtonState.Connected
+                        }
                     }
-                    buttonState = ButtonState.Connected
+
                     receivedMessage.clear()
                 }
             }
         }?.on("chat_image") {
             val message = it[0] as String
-            if(message == "loading1.gif") {
-                Log.d("SocketIO", "Received image: $message")
+            Log.d("SocketIO", "Received image: $message")
+
+            if (isBase64Image(message)) {
+                Log.d("SocketIO", "Image is base64-encoded.")
+
+                // Extract the base64 part
+                val base64Data = message.substringAfter(",")
+
+                // Decode the base64 data
+                bitmapImage = decodeBase64ToBitmap(base64Data) // Update the bitmap state
+
+                buttonState = ButtonState.Image
+            } else {
+                Log.d("SocketIO", "Image is not base64-encoded.")
             }
         }
 
@@ -365,16 +378,15 @@ fun WearApp(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black),
-        contentAlignment = Alignment.Center, // Center the content within the Box
+        contentAlignment = Alignment.Center // Center the content within the Box
     ) {
         CircularStateButton(
             currentState = buttonState,
+            bitmapImage,
             onClick = {
                 // Cycle through states on each click
                 when (buttonState) {
-                    ButtonState.Connecting ->  // Do nothing
-                        Unit
-
+                    ButtonState.Connecting -> Unit // Do nothing
                     ButtonState.Connected -> {
                         if (checkLocationPermission()) {
                             voiceLauncher.launch(voiceIntent)
@@ -387,6 +399,11 @@ fun WearApp(
                     }
 
                     ButtonState.Processing -> Unit
+
+                    ButtonState.Image -> {
+                        buttonState = ButtonState.Connected
+                        bitmapImage = null // Clear the image
+                    }
                 }
             }
         )
@@ -396,6 +413,7 @@ fun WearApp(
 @Composable
 fun CircularStateButton(
     currentState: ButtonState,
+    image: Bitmap? = null,
     onClick: () -> Unit
 ) {
     // Get screen width and height
@@ -450,6 +468,7 @@ fun CircularStateButton(
         ButtonState.Connected -> Color(0xFF0d4b48) // Dark green
         ButtonState.Recording -> Color(0xFFB22222)
         ButtonState.Processing -> Color.Blue
+        ButtonState.Image -> Color.Transparent
     }
 
     val text = when (currentState) {
@@ -457,6 +476,7 @@ fun CircularStateButton(
         ButtonState.Connected -> "Connected"
         ButtonState.Recording -> "Recording"
         ButtonState.Processing -> "Processing"
+        ButtonState.Image -> "Image"
     }
 
     val icon: ImageVector? = when (currentState) {
@@ -464,6 +484,7 @@ fun CircularStateButton(
         ButtonState.Connected -> null
         ButtonState.Recording -> Icons.Filled.Mic
         ButtonState.Processing -> Icons.Filled.Sync
+        ButtonState.Image -> null
     }
 
     Button(
@@ -472,7 +493,7 @@ fun CircularStateButton(
         shape = CircleShape,
         modifier = Modifier.size(animatedButtonSize) // Use the animated size
     ) {
-        if (icon != null) {
+        if (icon != null && text != "Image") {
             Icon(
                 imageVector = icon,
                 contentDescription = text,
@@ -480,15 +501,33 @@ fun CircularStateButton(
                     .size(animatedButtonSize * 0.3f) // Adjust icon size relative to button size
                     .graphicsLayer(rotationZ = rotationAngle) // Apply the rotation effect conditionally
             )
+        } else {
+            if (image != null) {
+                Image(
+                    bitmap = image.asImageBitmap(),
+                    contentDescription = "Image",
+                    modifier = Modifier.size(animatedButtonSize)
+                )
+            }
         }
     }
+}
+
+fun isBase64Image(data: String): Boolean {
+    return data.startsWith("data:image/png;base64,")
 }
 
 enum class ButtonState {
     Connecting,
     Connected,
     Recording,
-    Processing
+    Processing,
+    Image
+}
+
+fun decodeBase64ToBitmap(base64Str: String): Bitmap? {
+    val decodedBytes = Base64.decode(base64Str, Base64.DEFAULT)
+    return BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
 }
 
 fun streamTextToSpeech(
@@ -537,7 +576,7 @@ fun streamTextToSpeech(
 }
 
 // Function to play the audio from the received URL
-fun playAudio(byteArray: ByteArray?) {
+fun playAudio(byteArray: ByteArray?, onCompletion: () -> Unit) {
     byteArray?.let {
         try {
             val mediaPlayer = MediaPlayer()
@@ -554,6 +593,10 @@ fun playAudio(byteArray: ByteArray?) {
             mediaPlayer.prepareAsync()
             mediaPlayer.setOnPreparedListener { player ->
                 player.start()
+            }
+            mediaPlayer.setOnCompletionListener {
+                onCompletion() // Call the completion handler
+                mediaPlayer.release() // Release MediaPlayer resources
             }
         } catch (e: Exception) {
             Log.e("MediaPlayerError", "Error playing audio: ${e.localizedMessage}")
