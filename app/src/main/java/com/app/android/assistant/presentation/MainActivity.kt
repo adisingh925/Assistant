@@ -1,14 +1,14 @@
 package com.app.android.assistant.presentation
 
 import android.Manifest
-import android.content.Context
+import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.Location
 import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
 import android.speech.RecognizerIntent
-import android.speech.tts.TextToSpeech
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -16,6 +16,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -23,16 +24,21 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,12 +51,17 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.times
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.wear.compose.material.Button
 import androidx.wear.compose.material.ButtonDefaults
 import androidx.wear.compose.material.Icon
+import androidx.wear.compose.material.Text
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.tasks.Task
 import io.socket.client.IO
 import io.socket.client.Socket
 import okhttp3.Call
@@ -63,46 +74,192 @@ import okhttp3.Response
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
-import java.util.Locale
-
 
 class MainActivity : ComponentActivity() {
+
+    private lateinit var fusedLocationClient: FusedLocationProviderClient
+
+    companion object {
+        const val LOCATION_PERMISSION_CODE = 201
+    }
+
+    private var shouldShowPermissionScreen =
+        false // Track if we need to show manual permission screen
 
     @RequiresApi(Build.VERSION_CODES.S)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
+
+        setContent {
+            if (shouldShowPermissionScreen) {
+                PermissionScreen(
+                    requestPermissions = ::requestPermissionsManually
+                )
+            } else {
+                requestPermissions() // Auto-request permissions on app start
+            }
+        }
+    }
+
+    // Automatically request both permissions on start
+    private fun requestPermissions() {
+        val permissionsNeeded = mutableListOf<String>()
+
+        if (!checkLocationPermission()) {
+            permissionsNeeded.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+
+        if (permissionsNeeded.isNotEmpty()) {
+            ActivityCompat.requestPermissions(
+                this, permissionsNeeded.toTypedArray(), LOCATION_PERMISSION_CODE
+            )
+        } else {
+            Log.d("Permissions", "Location permission already granted.")
+            onPermissionsGranted()
+        }
+    }
+
+    // Manually request permissions when the button is clicked
+    private fun requestPermissionsManually() {
+        requestPermissions()
+    }
+
+    // Handle the result of the permission request
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        // Check if all permissions are granted
+        if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+            onPermissionsGranted()
+        } else {
+            // If any permission is denied, show the manual permission screen
+            shouldShowPermissionScreen = true
+            setContent {
+                PermissionScreen(
+                    requestPermissions = ::requestPermissionsManually
+                )
+            }
+            Log.d("Permissions", "One or more permissions were denied.")
+        }
+    }
+
+    // Called when both permissions are granted
+    private fun onPermissionsGranted() {
+        getLastKnownLocation()
+
         setContent {
             WearApp(
-                checkPermissions = ::checkMicrophonePermissions,
-                this
+                checkLocationPermission = ::checkLocationPermission,
+                fetchUserLocation()
             )
         }
     }
 
-    private fun checkMicrophonePermissions(): Boolean {
-        if (ContextCompat.checkSelfPermission(
-                this, Manifest.permission.RECORD_AUDIO
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.RECORD_AUDIO), 200
-            )
-            return false
+    private fun getLastKnownLocation() {
+        try {
+            if (checkLocationPermission()) {
+                val locationResult: Task<Location> = fusedLocationClient.lastLocation
+                locationResult.addOnCompleteListener { task ->
+                    if (task.isSuccessful) {
+                        task.result?.let { location ->
+                            Log.d(
+                                "Location Info",
+                                "Latitude: ${location.latitude}, Longitude: ${location.longitude}"
+                            )
+                            storeUserLocation(location.latitude, location.longitude)
+                        }
+                    } else {
+                        Log.d("Location Info", "Location not found")
+                    }
+                }
+            }
+        } catch (e: SecurityException) {
+            e.printStackTrace()
         }
-        return true
+    }
+
+    private fun storeUserLocation(latitude: Double, longitude: Double) {
+        val sharedPreferences = getSharedPreferences("UserLocation", MODE_PRIVATE)
+        val editor = sharedPreferences.edit()
+        editor.putString("Latitude", latitude.toString())
+        editor.putString("Longitude", longitude.toString())
+        editor.apply()
+    }
+
+    private fun fetchUserLocation(): Pair<Double, Double>? {
+        val sharedPreferences = getSharedPreferences("UserLocation", MODE_PRIVATE)
+
+        val latitude = sharedPreferences.getString("Latitude", null)
+        val longitude = sharedPreferences.getString("Longitude", null)
+
+        return if (latitude != null && longitude != null) {
+            Pair(latitude.toDouble(), longitude.toDouble())
+        } else {
+            null // Handle the case where location is not stored
+        }
+    }
+
+    private fun checkLocationPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            this, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+}
+
+@Composable
+fun PermissionScreen(
+    requestPermissions: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .padding(16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(text = "Permissions required to proceed.")
+            Spacer(modifier = Modifier.height(16.dp))
+            Button(
+                onClick = { requestPermissions() },
+                modifier = Modifier.size(48.dp),
+                shape = CircleShape
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(
+                        imageVector = Icons.Default.Check, // Icon at the top
+                        contentDescription = "Grant",
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = "Grant",
+                        fontSize = 10.sp // Smaller font size
+                    )
+                }
+            }
+        }
     }
 }
 
 @Composable
 fun WearApp(
-    checkPermissions: () -> Boolean,
-    context: Context,
+    checkLocationPermission: () -> Boolean,
+    location: Pair<Double, Double>? = null
 ) {
+    Log.d("Location", "User location: $location")
+
     var buttonState by remember { mutableStateOf(ButtonState.Connecting) }
     var textForVoiceInput by remember { mutableStateOf("") }
     val receivedMessage: StringBuilder by remember { mutableStateOf(StringBuilder()) }
-    var textToSpeech: TextToSpeech? by remember { mutableStateOf(null) }
 
     val socket = remember {
         try {
@@ -129,30 +286,18 @@ fun WearApp(
         )
     }
 
-    LaunchedEffect(Unit) {
-        textToSpeech = TextToSpeech(context) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                Log.d("TTS", "TextToSpeech initialized successfully")
-                textToSpeech?.language = Locale.US // Set language to US English
-            } else {
-                Log.d("TTS", "Failed to initialize TextToSpeech")
-            }
-        }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            textToSpeech?.shutdown()
-        }
-    }
-
     val voiceLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { activityResult ->
-        // This is where you process the intent and extract the speech text from the intent.
-        activityResult.data?.let { data ->
-            val results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-            textForVoiceInput = results?.get(0) ?: "None"
+        if (activityResult.resultCode == Activity.RESULT_CANCELED) {
+            // Handle the case where the user canceled the activity
+            Log.d("VoiceInput", "Voice input canceled.")
+            buttonState = ButtonState.Connected
+        } else if (activityResult.resultCode == Activity.RESULT_OK) {
+            activityResult.data?.let { data ->
+                val results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                textForVoiceInput = results?.get(0) ?: "None"
+            }
         }
     }
 
@@ -166,7 +311,7 @@ fun WearApp(
             socket.emit("register", "client")
         }?.on(Socket.EVENT_DISCONNECT) {
             // Handle disconnect
-            buttonState = ButtonState.Connecting // or another state based on your logic
+            buttonState = ButtonState.Connecting
         }?.on("chat_stream") {
             // Handle incoming messages
             val message = it[0] as String
@@ -182,9 +327,13 @@ fun WearApp(
                         playAudio(byteArray)
                     }
                     buttonState = ButtonState.Connected
-//                    textToSpeech?.speak(receivedMessage, TextToSpeech.QUEUE_FLUSH, null, null)
                     receivedMessage.clear()
                 }
+            }
+        }?.on("chat_image") {
+            val message = it[0] as String
+            if(message == "loading1.gif") {
+                Log.d("SocketIO", "Received image: $message")
             }
         }
 
@@ -195,7 +344,19 @@ fun WearApp(
     LaunchedEffect(textForVoiceInput) {
         Log.d("VoiceInput", "Received text: $textForVoiceInput")
         if (textForVoiceInput.isNotEmpty()) {
-            socket?.emit("chat_message", textForVoiceInput)
+            socket?.emit(
+                "chat_message",
+                textForVoiceInput,
+                null,
+                2,
+                110,
+                null,
+                "portrait",
+                false,
+                "USER",
+                "CONVERSATIONID",
+                "${location?.first ?: "Unknown"}, ${location?.second ?: "Unknown"}"
+            )
             buttonState = ButtonState.Processing
         }
     }
@@ -215,7 +376,7 @@ fun WearApp(
                         Unit
 
                     ButtonState.Connected -> {
-                        if (checkPermissions()) {
+                        if (checkLocationPermission()) {
                             voiceLauncher.launch(voiceIntent)
                             buttonState = ButtonState.Recording
                         }
@@ -251,10 +412,10 @@ fun CircularStateButton(
         animationSpec = if (currentState == ButtonState.Connected) {
             infiniteRepeatable(
                 animation = keyframes {
-                    durationMillis = 2000 // Animation duration
-                    defaultButtonSize at 0 using FastOutSlowInEasing
-                    defaultButtonSize * 1.2f at 1000 using FastOutSlowInEasing
-                    defaultButtonSize at 2000 using FastOutSlowInEasing
+                    durationMillis = 3000 // Slower, for a "breathing" effect
+                    defaultButtonSize at 0 using LinearOutSlowInEasing
+                    defaultButtonSize * 1.2f at 1500 using LinearOutSlowInEasing // Expanding phase
+                    defaultButtonSize at 3000 using LinearOutSlowInEasing // Contracting phase
                 },
                 repeatMode = RepeatMode.Reverse
             )
@@ -363,7 +524,8 @@ fun streamTextToSpeech(
         override fun onResponse(call: Call, response: Response) {
             if (response.isSuccessful) {
                 response.body?.byteStream()?.use { inputStream ->
-                    val byteArray = inputStream.readBytes() // Read the input stream into a byte array
+                    val byteArray =
+                        inputStream.readBytes() // Read the input stream into a byte array
                     onStreamReady(byteArray)
                 }
             } else {
