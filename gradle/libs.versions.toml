@@ -1,5 +1,5 @@
 [versions]
-agp = "8.5.1"
+agp = "8.5.2"
 kotlin = "1.9.0"
 materialIconsExtended = "1.7.2"
 okhttp = "4.12.0"
@@ -11,6 +11,7 @@ activityCompose = "1.7.2"
 coreSplashscreen = "1.0.1"
 socketIoClient = "2.1.1"
 playServicesLocation = "21.3.0"
+wear = "1.3.0"
 
 [libraries]
 material-icons-extended = { module = "androidx.compose.material:material-icons-extended", version.ref = "materialIconsExtended" }
@@ -28,6 +29,7 @@ compose-foundation = { group = "androidx.wear.compose", name = "compose-foundati
 activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "coreSplashscreen" }
 play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
+wear = { group = "androidx.wear", name = "wear", version.ref = "wear" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
