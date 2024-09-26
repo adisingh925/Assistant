@@ -355,7 +355,7 @@ fun WearApp(
                     receivedMessage.append(message)
                 } else if (message == "-EOM-") {
                     streamTextToSpeech(
-                        receivedMessage.toString()
+                        applyFilters(receivedMessage.toString())
                     ) { byteArray ->
                         playAudio(byteArray) {
                             if (expectedDataType == "text") {
@@ -661,5 +661,42 @@ fun playAudio(byteArray: ByteArray?, onCompletion: () -> Unit) {
         }
     } ?: run {
         Log.e("TTS", "Audio byte array is null, cannot play audio.")
+    }
+}
+
+private fun applyFilters(data: String): String {
+    var filteredData = data
+
+    // Remove text between asterisks
+    filteredData = filteredData.replace(Regex("\\*[^*]*\\*"), "")
+
+    // Remove HTML comments
+    filteredData = filteredData.replace(Regex("<!--.*?-->"), "")
+
+    // Replace tilde (~) with empty string
+    filteredData = filteredData.replace("~", "")
+
+    // Replace &nbsp; with a space
+    filteredData = filteredData.replace("&nbsp;", " ")
+
+    // Remove <br> tags
+    filteredData = filteredData.replace("<br>", "")
+
+    // Remove text after certain markers like "Picture:", "<html", "<|", and "</"
+    filteredData = getTextBeforeMarker(filteredData, "\"Picture:")
+    filteredData = getTextBeforeMarker(filteredData, "Picture:")
+    filteredData = getTextBeforeMarker(filteredData, "<html")
+    filteredData = getTextBeforeMarker(filteredData, "<|")
+    filteredData = getTextBeforeMarker(filteredData, "</")
+
+    return filteredData
+}
+
+private fun getTextBeforeMarker(data: String, marker: String): String {
+    val index = data.indexOf(marker)
+    return if (index != -1) {
+        data.substring(0, index)
+    } else {
+        data
     }
 }
