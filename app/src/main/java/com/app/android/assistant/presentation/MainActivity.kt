@@ -8,8 +8,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.drawable.Icon
-import android.location.Location
 import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
@@ -17,11 +15,11 @@ import android.speech.RecognizerIntent
 import android.util.Base64
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
@@ -31,21 +29,28 @@ import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -57,13 +62,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.vector.PathBuilder
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.text.toLowerCase
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.times
@@ -73,17 +78,16 @@ import androidx.wear.ambient.AmbientLifecycleObserver
 import androidx.wear.compose.material.Button
 import androidx.wear.compose.material.ButtonDefaults
 import androidx.wear.compose.material.Icon
+import androidx.wear.compose.material.MaterialTheme
 import androidx.wear.compose.material.Text
 import com.app.android.assistant.presentation.MainActivity.Companion.ELEVEN_LABS_API_KEY
 import com.app.android.assistant.presentation.MainActivity.Companion.ELEVEN_LABS_BASE_URL
 import com.app.android.assistant.presentation.MainActivity.Companion.ELEVEN_LABS_VOICE_ID
 import com.app.android.assistant.presentation.MainActivity.Companion.SOCKET_SERVER_CONNECTION_TOKEN
 import com.app.android.assistant.presentation.MainActivity.Companion.SOCKET_URL
-import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
-import com.google.android.gms.tasks.Task
 import io.socket.client.IO
 import io.socket.client.Socket
 import kotlinx.coroutines.Dispatchers
@@ -124,9 +128,6 @@ class MainActivity : ComponentActivity() {
         }
 
         override fun onUpdateAmbient() {
-            // ... Called by the system in order to allow the app to periodically
-            // update the display while in ambient mode. Typically the system will
-            // call this every 60 seconds.
             Log.d("Ambient", "Updating ambient mode")
         }
     }
@@ -251,214 +252,264 @@ fun PermissionScreen(
     }
 }
 
-@SuppressLint("MissingPermission")
+@SuppressWarnings("MissingPermission")
 @Composable
 fun WearApp(
     checkLocationPermission: () -> Boolean,
     context: Context
 ) {
-    val scope = rememberCoroutineScope()
-    var buttonState by remember { mutableStateOf(ButtonState.Connecting) }
-    var textForVoiceInput by remember { mutableStateOf("") }
-    val receivedMessage: StringBuilder by remember { mutableStateOf(StringBuilder()) }
-    var bitmapImage by remember { mutableStateOf<Bitmap?>(null) } // State to hold the bitmap image
-    val locationClient = remember {
-        LocationServices.getFusedLocationProviderClient(context)
+    var currentScreen by remember { mutableStateOf("main") }
+
+    when (currentScreen) {
+        "main" -> WearAppWithSwipeNavigation(
+            checkLocationPermission = checkLocationPermission,
+            context = context,
+            navigateToSettings = { currentScreen = "settings" }
+        )
+
+        "settings" -> SettingsScreen(
+            context,
+            navigateBack = { currentScreen = "main" }
+        )
     }
-    var latitudes by remember { mutableStateOf("") }
-    var longitudes by remember { mutableStateOf("") }
-    var expectedDataType by remember { mutableStateOf("") }
+}
 
-    val socket = remember {
-        try {
-            val options = IO.Options().apply {
-                auth = mapOf("token" to SOCKET_SERVER_CONNECTION_TOKEN)
-            }
-            Log.d("SocketIO", "Connecting to Socket Server...")
-            IO.socket(SOCKET_URL, options)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
-        }
-    }
-
-    val voiceIntent: Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_PROMPT, "Please speak now")
-    }
-
-    val voiceLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { activityResult ->
-        if (activityResult.resultCode == Activity.RESULT_CANCELED) {
-            Log.d("VoiceInput", "Voice input canceled.")
-            buttonState = ButtonState.Connected
-        } else if (activityResult.resultCode == Activity.RESULT_OK) {
-            activityResult.data?.let { data ->
-                val results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                textForVoiceInput = results?.get(0) ?: "None"
-            }
-        }
-    }
-
-    /**
-     * Fetch the user's location in separate thread
-     */
-    LaunchedEffect(Unit) {
-        scope.launch(Dispatchers.IO) {
-            if (checkLocationPermission()) {
-                /** Fetch accurate location data */
-                val priority = Priority.PRIORITY_HIGH_ACCURACY
-                locationClient.getCurrentLocation(
-                    priority,
-                    CancellationTokenSource().token,
-                ).addOnCompleteListener {
-                    if (it.isSuccessful) {
-                        val fetchedLocation = it.result
-                        latitudes = fetchedLocation.latitude.toString()
-                        longitudes = fetchedLocation.longitude.toString()
-                        Log.d(
-                            "Location",
-                            "Fetched location: ${fetchedLocation.latitude}, ${fetchedLocation.longitude}"
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            Log.d("SocketIO", "Disconnecting from the server")
-            socket?.disconnect()
-        }
-    }
-
-    /**
-     * Connect to the Socket server and handle events
-     */
-    LaunchedEffect(Unit) {
-        socket?.on(Socket.EVENT_CONNECT) {
-            Log.d("SocketIO", "Connected to the server")
-            voiceLauncher.launch(voiceIntent)
-            buttonState = ButtonState.Recording
-
-            /** Register Client */
-            socket.emit("register", "client")
-        }?.on(Socket.EVENT_DISCONNECT) {
-            buttonState = ButtonState.Connecting
-        }?.on("chat_stream") {
-            val message = it[0] as String
-            if (message.isNotEmpty()) {
-                Log.d("SocketIO", "Received message : $message")
-                if (message != "-SOM-" && message != "-EOM-") {
-                    receivedMessage.append(message)
-                } else if (message == "-EOM-") {
-                    streamTextToSpeech(
-                        applyFilters(receivedMessage.toString())
-                    ) { byteArray ->
-                        playAudio(byteArray) {
-                            if (expectedDataType == "text") {
-                                if (checkLocationPermission()) {
-                                    voiceLauncher.launch(voiceIntent)
-                                    buttonState = ButtonState.Recording
-                                }
-                            }
-                        }
-                    }
-
-                    receivedMessage.clear()
-                }
-            }
-        }?.on("chat_image") {
-            val message = it[0] as String
-            Log.d("SocketIO", "Received image : $message")
-
-            if (isBase64Image(message)) {
-                Log.d("SocketIO", "Image is base64-encoded.")
-
-                // Extract the base64 part
-                val base64Data = message.substringAfter(",")
-
-                // Decode the base64 data and update the bitmap state
-                bitmapImage = decodeBase64ToBitmap(base64Data)
-
-                // change the state to image
-                buttonState = ButtonState.Image
-            } else {
-                Log.d("SocketIO", "Image is not base64-encoded.")
-            }
-        }
-
-        // Connect to the socket server
-        socket?.connect()
-    }
-
-    LaunchedEffect(textForVoiceInput) {
-        Log.d("VoiceInput", "Received text from User : $textForVoiceInput")
-
-        expectedDataType = if (textForVoiceInput.contains("image", ignoreCase = true)) {
-            "image"
-        } else {
-            "text"
-        }
-
-        if (textForVoiceInput.isNotEmpty()) {
-            socket?.emit(
-                "chat_message",
-                textForVoiceInput.lowercase(Locale.ENGLISH),
-                null,
-                2,
-                110,
-                null,
-                "portrait",
-                false,
-                "USER",
-                "CONVERSATIONID",
-                "${latitudes},${longitudes}"
-            )
-
-            // change the state to processing
-            buttonState = ButtonState.Processing
-        }
-    }
+@SuppressLint("MissingPermission")
+@Composable
+fun WearAppWithSwipeNavigation(
+    checkLocationPermission: () -> Boolean,
+    context: Context,
+    navigateToSettings: () -> Unit
+) {
+    val swipeThreshold = 10f
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black),
-        contentAlignment = Alignment.Center // Center the content within the Box
+            .pointerInput(Unit) {
+                detectVerticalDragGestures(
+                    onVerticalDrag = { change, velocity ->
+                        Log.d("Swipe", "Velocity: $velocity change: $change")
+                        if (velocity > swipeThreshold) {
+                            Log.d("Swipe", "Swiped right")
+                        } else if (velocity < -swipeThreshold) {
+                            Log.d("Swipe", "Swiped up")
+                            navigateToSettings()
+                        }
+                    }
+                )
+            }
     ) {
-        CircularStateButton(
-            currentState = buttonState,
-            bitmapImage,
-            onClick = {
-                // Cycle through states on each click
-                when (buttonState) {
-                    ButtonState.Connecting -> Unit // Do nothing
-                    ButtonState.Connected -> {
-                        if (checkLocationPermission()) {
-                            voiceLauncher.launch(voiceIntent)
-                            buttonState = ButtonState.Recording
+        val scope = rememberCoroutineScope()
+        var buttonState by remember { mutableStateOf(ButtonState.Connecting) }
+        var textForVoiceInput by remember { mutableStateOf("") }
+        val receivedMessage: StringBuilder by remember { mutableStateOf(StringBuilder()) }
+        var bitmapImage by remember { mutableStateOf<Bitmap?>(null) } // State to hold the bitmap image
+        val locationClient = remember {
+            LocationServices.getFusedLocationProviderClient(context)
+        }
+        var latitudes by remember { mutableStateOf("") }
+        var longitudes by remember { mutableStateOf("") }
+        var expectedDataType by remember { mutableStateOf("") }
+
+        val socket = remember {
+            try {
+                val options = IO.Options().apply {
+                    auth = mapOf("token" to SOCKET_SERVER_CONNECTION_TOKEN)
+                }
+                Log.d("SocketIO", "Connecting to Socket Server...")
+                IO.socket(SOCKET_URL, options)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                null
+            }
+        }
+
+        val voiceIntent: Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "Please speak now")
+        }
+
+        val voiceLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { activityResult ->
+            if (activityResult.resultCode == Activity.RESULT_CANCELED) {
+                Log.d("VoiceInput", "Voice input canceled.")
+                buttonState = ButtonState.Connected
+            } else if (activityResult.resultCode == Activity.RESULT_OK) {
+                activityResult.data?.let { data ->
+                    val results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                    textForVoiceInput = results?.get(0) ?: "None"
+                }
+            }
+        }
+
+        /**
+         * Fetch the user's location in separate thread
+         */
+        LaunchedEffect(Unit) {
+            scope.launch(Dispatchers.IO) {
+                if (checkLocationPermission()) {
+                    /** Fetch accurate location data */
+                    val priority = Priority.PRIORITY_HIGH_ACCURACY
+                    locationClient.getCurrentLocation(
+                        priority,
+                        CancellationTokenSource().token,
+                    ).addOnCompleteListener {
+                        if (it.isSuccessful) {
+                            val fetchedLocation = it.result
+                            latitudes = fetchedLocation.latitude.toString()
+                            longitudes = fetchedLocation.longitude.toString()
+                            Log.d(
+                                "Location",
+                                "Fetched location: ${fetchedLocation.latitude}, ${fetchedLocation.longitude}"
+                            )
                         }
-                    }
-
-                    ButtonState.Recording -> {
-                        buttonState = ButtonState.Processing
-                    }
-
-                    ButtonState.Processing -> Unit
-
-                    ButtonState.Image -> {
-                        if (checkLocationPermission()) {
-                            voiceLauncher.launch(voiceIntent)
-                            buttonState = ButtonState.Recording
-                        }
-                        bitmapImage = null // Clear the image
                     }
                 }
             }
-        )
+        }
+
+        /**
+         * Connect to the Socket server and handle events
+         */
+        LaunchedEffect(Unit) {
+            if (socket != null) {
+                if (!socket.connected()) {
+                    socket.on(Socket.EVENT_CONNECT) {
+                        Log.d("SocketIO", "Connected to the server")
+                        voiceLauncher.launch(voiceIntent)
+                        buttonState = ButtonState.Recording
+
+                        /** Register Client */
+                        socket.emit("register", "client")
+                    }?.on(Socket.EVENT_DISCONNECT) {
+                        buttonState = ButtonState.Connecting
+                    }?.on("chat_stream") {
+                        val message = it[0] as String
+                        if (message.isNotEmpty()) {
+                            Log.d("SocketIO", "Received message : $message")
+                            if (message != "-SOM-" && message != "-EOM-") {
+                                receivedMessage.append(message)
+                            } else if (message == "-EOM-") {
+                                streamTextToSpeech(
+                                    applyFilters(receivedMessage.toString())
+                                ) { byteArray ->
+                                    playAudio(byteArray) {
+                                        if (expectedDataType == "text") {
+                                            if (checkLocationPermission()) {
+                                                voiceLauncher.launch(voiceIntent)
+                                                buttonState = ButtonState.Recording
+                                            }
+                                        }
+                                    }
+                                }
+
+                                receivedMessage.clear()
+                            }
+                        }
+                    }?.on("chat_image") {
+                        val message = it[0] as String
+                        Log.d("SocketIO", "Received image : $message")
+
+                        if (isBase64Image(message)) {
+                            Log.d("SocketIO", "Image is base64-encoded.")
+
+                            // Extract the base64 part
+                            val base64Data = message.substringAfter(",")
+
+                            // Decode the base64 data and update the bitmap state
+                            bitmapImage = decodeBase64ToBitmap(base64Data)
+
+                            // change the state to image
+                            buttonState = ButtonState.Image
+                        } else {
+                            Log.d("SocketIO", "Image is not base64-encoded.")
+                        }
+                    }
+
+                    // Connect to the socket server
+                    socket.connect()
+                }
+            }
+        }
+
+        LaunchedEffect(textForVoiceInput) {
+            Log.d("VoiceInput", "Received text from User : $textForVoiceInput")
+
+            expectedDataType = if (textForVoiceInput.contains("image", ignoreCase = true)) {
+                "image"
+            } else {
+                "text"
+            }
+
+            if (textForVoiceInput.isNotEmpty()) {
+                socket?.emit(
+                    "chat_message",
+                    textForVoiceInput.lowercase(Locale.ENGLISH),
+                    null,
+                    2,
+                    110,
+                    null,
+                    "portrait",
+                    false,
+                    "USER",
+                    "CONVERSATIONID",
+                    "${latitudes},${longitudes}"
+                )
+
+                // change the state to processing
+                buttonState = ButtonState.Processing
+            }
+        }
+
+        DisposableEffect(Unit) {
+            onDispose {
+                Log.d("SocketIO", "Disconnecting from the server")
+                socket?.disconnect()
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+            contentAlignment = Alignment.Center // Center the content within the Box
+        ) {
+            CircularStateButton(
+                currentState = buttonState,
+                bitmapImage,
+                onClick = {
+                    // Cycle through states on each click
+                    when (buttonState) {
+                        ButtonState.Connecting -> Unit // Do nothing
+                        ButtonState.Connected -> {
+                            if (checkLocationPermission()) {
+                                voiceLauncher.launch(voiceIntent)
+                                buttonState = ButtonState.Recording
+                            }
+                        }
+
+                        ButtonState.Recording -> {
+                            buttonState = ButtonState.Processing
+                        }
+
+                        ButtonState.Processing -> Unit
+
+                        ButtonState.Image -> {
+                            if (checkLocationPermission()) {
+                                voiceLauncher.launch(voiceIntent)
+                                buttonState = ButtonState.Recording
+                            }
+                            bitmapImage = null // Clear the image
+                        }
+                    }
+                }
+            )
+        }
     }
 }
 
@@ -700,3 +751,93 @@ private fun getTextBeforeMarker(data: String, marker: String): String {
         data
     }
 }
+
+fun getFromPreferences(context: Context, key: String, defaultValue: String = ""): String {
+    val sharedPreferences = context.getSharedPreferences("WearAppSettings", Context.MODE_PRIVATE)
+    return sharedPreferences.getString(key, defaultValue) ?: defaultValue
+}
+
+@Composable
+fun SettingsScreen(context: Context,navigateBack: () -> Unit) {
+    var socketToken by remember { mutableStateOf(getFromPreferences(context, "SOCKET_TOKEN")) }
+    var elevenLabsApiKey by remember { mutableStateOf(getFromPreferences(context, "ELEVEN_LABS_API_KEY")) }
+    var voiceId by remember { mutableStateOf(getFromPreferences(context, "VOICE_ID")) }
+
+    BackHandler {
+        navigateBack() // Call the navigate back function when the back button is pressed
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.DarkGray)
+    ) {
+        // Enable vertical scrolling with padding
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()) // Add scrollable modifier
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Top // Top arrangement for scrollability
+        ) {
+            Text(text = "Settings", color = Color.White, style = MaterialTheme.typography.title1)
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Socket Token Input Field
+            OutlinedTextField(
+                value = socketToken,
+                onValueChange = { socketToken = it },
+                label = { Text("Socket Token") },
+                textStyle = TextStyle(color = Color.White, fontWeight = FontWeight.Bold),
+                singleLine = true
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Eleven Labs API Key Input Field
+            OutlinedTextField(
+                value = elevenLabsApiKey,
+                onValueChange = { elevenLabsApiKey = it },
+                label = { Text("Eleven Labs API Key") },
+                singleLine = true,
+                textStyle = TextStyle(color = Color.White, fontWeight = FontWeight.Bold),
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Voice ID Input Field
+            OutlinedTextField(
+                value = voiceId,
+                onValueChange = { voiceId = it },
+                label = { Text("Voice ID") },
+                textStyle = TextStyle(color = Color.White, fontWeight = FontWeight.Bold),
+                singleLine = true
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+
+            // Save Button
+            Button(onClick = {
+                saveApiKeys(context, socketToken, elevenLabsApiKey, voiceId)
+                // Save the API keys logic here
+                // You can pass these values back to the main app or save them in persistent storage (e.g., SharedPreferences or DataStore)
+                navigateBack()
+            }) {
+                Text(text = "Save")
+            }
+        }
+    }
+}
+
+fun saveApiKeys(context: Context, socketToken: String, elevenLabsApiKey: String, voiceId: String) {
+    val sharedPreferences = context.getSharedPreferences("WearAppSettings", Context.MODE_PRIVATE)
+    with(sharedPreferences.edit()) {
+        putString("SOCKET_TOKEN", socketToken)
+        putString("ELEVEN_LABS_API_KEY", elevenLabsApiKey)
+        putString("VOICE_ID", voiceId)
+        apply()
+    }
+}
+

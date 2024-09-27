@@ -59,6 +59,7 @@ dependencies {
     implementation(libs.core.splashscreen)
     implementation(libs.play.services.location)
     implementation(libs.wear)
+    implementation(libs.material3.android)
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.ui.test.junit4)
     debugImplementation(libs.ui.tooling)
@@ -66,4 +67,5 @@ dependencies {
     implementation(libs.material.icons.extended)
     implementation(libs.socket.io.client)
     implementation(libs.okhttp)
+    implementation(libs.material3)
 }
