@@ -29,14 +29,12 @@ import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -49,8 +47,6 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.TextField
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -315,7 +311,7 @@ fun WearAppWithSwipeNavigation(
         val socket = remember {
             try {
                 val options = IO.Options().apply {
-                    auth = mapOf("token" to SOCKET_SERVER_CONNECTION_TOKEN)
+                    auth = mapOf("token" to getFromPreferences(context, "SOCKET_TOKEN", SOCKET_SERVER_CONNECTION_TOKEN))
                 }
                 Log.d("SocketIO", "Connecting to Socket Server...")
                 IO.socket(SOCKET_URL, options)
@@ -396,6 +392,7 @@ fun WearAppWithSwipeNavigation(
                                 receivedMessage.append(message)
                             } else if (message == "-EOM-") {
                                 streamTextToSpeech(
+                                    context,
                                     applyFilters(receivedMessage.toString())
                                 ) { byteArray ->
                                     playAudio(byteArray) {
@@ -641,6 +638,7 @@ fun decodeBase64ToBitmap(base64Str: String): Bitmap? {
 }
 
 fun streamTextToSpeech(
+    context: Context,
     text: String,
     onStreamReady: (byteArray: ByteArray?) -> Unit
 ) {
@@ -656,8 +654,8 @@ fun streamTextToSpeech(
     jsonBody.put("voice_settings", voiceSettings)
 
     val request = Request.Builder()
-        .url("${ELEVEN_LABS_BASE_URL}/v1/text-to-speech/${ELEVEN_LABS_VOICE_ID}/stream")
-        .addHeader("xi-api-key", ELEVEN_LABS_API_KEY)
+        .url("${ELEVEN_LABS_BASE_URL}/v1/text-to-speech/${getFromPreferences(context, "VOICE_ID", ELEVEN_LABS_VOICE_ID)}/stream")
+        .addHeader("xi-api-key", getFromPreferences(context, "ELEVEN_LABS_API_KEY", ELEVEN_LABS_API_KEY))
         .addHeader("content-type", "application/json")
         .post(RequestBody.create("application/json".toMediaTypeOrNull(), jsonBody.toString()))
         .build()
@@ -754,14 +752,15 @@ private fun getTextBeforeMarker(data: String, marker: String): String {
 
 fun getFromPreferences(context: Context, key: String, defaultValue: String = ""): String {
     val sharedPreferences = context.getSharedPreferences("WearAppSettings", Context.MODE_PRIVATE)
-    return sharedPreferences.getString(key, defaultValue) ?: defaultValue
-}
+    val value = sharedPreferences.getString(key, "")
+    Log.d("Preferences", "Retrieved $key: $value")
+    return if (value.isNullOrBlank()) defaultValue else value.toString()}
 
 @Composable
 fun SettingsScreen(context: Context,navigateBack: () -> Unit) {
-    var socketToken by remember { mutableStateOf(getFromPreferences(context, "SOCKET_TOKEN")) }
-    var elevenLabsApiKey by remember { mutableStateOf(getFromPreferences(context, "ELEVEN_LABS_API_KEY")) }
-    var voiceId by remember { mutableStateOf(getFromPreferences(context, "VOICE_ID")) }
+    var socketToken by remember { mutableStateOf(getFromPreferences(context, "SOCKET_TOKEN", SOCKET_SERVER_CONNECTION_TOKEN)) }
+    var elevenLabsApiKey by remember { mutableStateOf(getFromPreferences(context, "ELEVEN_LABS_API_KEY", ELEVEN_LABS_API_KEY)) }
+    var voiceId by remember { mutableStateOf(getFromPreferences(context, "VOICE_ID", ELEVEN_LABS_VOICE_ID)) }
 
     BackHandler {
         navigateBack() // Call the navigate back function when the back button is pressed
