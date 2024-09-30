@@ -460,7 +460,7 @@ fun WearAppWithSwipeNavigation(
                     textForVoiceInput.lowercase(Locale.ENGLISH),
                     null,
                     2,
-                    110,
+                    -1,
                     null,
                     "square",
                     false,
@@ -491,6 +491,7 @@ fun WearAppWithSwipeNavigation(
                 currentState = buttonState,
                 bitmapImage,
                 onClick = {
+                    bitmapImage = null // Clear the image
                     // Cycle through states on each click
                     when (buttonState) {
                         ButtonState.Connecting -> Unit // Do nothing
