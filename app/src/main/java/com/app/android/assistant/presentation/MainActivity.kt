@@ -457,6 +457,7 @@ fun WearAppWithSwipeNavigation(
             if (textForVoiceInput.isNotEmpty()) {
                 socket?.emit(
                     "chat_message",
+                    textForVoiceInput.lowercase(Locale.ENGLISH),
                     null,
                     2,
                     110,
