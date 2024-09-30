@@ -457,12 +457,11 @@ fun WearAppWithSwipeNavigation(
             if (textForVoiceInput.isNotEmpty()) {
                 socket?.emit(
                     "chat_message",
-                    textForVoiceInput.lowercase(Locale.ENGLISH),
                     null,
                     2,
                     110,
                     null,
-                    "portrait",
+                    "square",
                     false,
                     "USER",
                     "CONVERSATIONID",
@@ -637,7 +636,8 @@ fun CircularStateButton(
 }
 
 fun isBase64Image(data: String): Boolean {
-    return data.startsWith("data:image/png;base64,")
+    return data.startsWith("data:image")
+
 }
 
 enum class ButtonState {
