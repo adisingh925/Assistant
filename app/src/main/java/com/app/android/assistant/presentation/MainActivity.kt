@@ -377,8 +377,9 @@ fun WearAppWithSwipeNavigation(
                 if (!socket.connected()) {
                     socket.on(Socket.EVENT_CONNECT) {
                         Log.d("SocketIO", "Connected to the server")
-                        voiceLauncher.launch(voiceIntent)
-                        buttonState = ButtonState.Recording
+                        //Commented out to fix network change STT trigger
+                        //voiceLauncher.launch(voiceIntent)
+                        buttonState = ButtonState.Connected
 
                         /** Register Client */
                         socket.emit("register", "client")
@@ -425,6 +426,16 @@ fun WearAppWithSwipeNavigation(
                             buttonState = ButtonState.Image
                         } else {
                             Log.d("SocketIO", "Image is not base64-encoded.")
+                            if (message == "loading1.gif") {
+                                buttonState = ButtonState.Processing
+                                expectedDataType = "text"
+                                Log.d("SocketIO", "Setting app state to Processing")
+                            }
+                            if (message == "loading2.gif") {
+                                buttonState = ButtonState.Processing2
+                                expectedDataType = "image"
+                                Log.d("SocketIO", "Setting app state to Processing2")
+                            }
                         }
                     }
 
@@ -437,11 +448,11 @@ fun WearAppWithSwipeNavigation(
         LaunchedEffect(textForVoiceInput) {
             Log.d("VoiceInput", "Received text from User : $textForVoiceInput")
 
-            expectedDataType = if (textForVoiceInput.contains("image", ignoreCase = true)) {
-                "image"
-            } else {
-                "text"
-            }
+//            expectedDataType = if (textForVoiceInput.contains("image", ignoreCase = true)) {
+//                "image"
+//            } else {
+//                "text"
+//            }
 
             if (textForVoiceInput.isNotEmpty()) {
                 socket?.emit(
@@ -449,9 +460,9 @@ fun WearAppWithSwipeNavigation(
                     textForVoiceInput.lowercase(Locale.ENGLISH),
                     null,
                     2,
-                    110,
+                    -1,
                     null,
-                    "portrait",
+                    "square",
                     false,
                     "USER",
                     "CONVERSATIONID",
@@ -480,6 +491,7 @@ fun WearAppWithSwipeNavigation(
                 currentState = buttonState,
                 bitmapImage,
                 onClick = {
+                    bitmapImage = null // Clear the image
                     // Cycle through states on each click
                     when (buttonState) {
                         ButtonState.Connecting -> Unit // Do nothing
@@ -496,10 +508,12 @@ fun WearAppWithSwipeNavigation(
 
                         ButtonState.Processing -> Unit
 
+                        ButtonState.Processing2 -> Unit
+
                         ButtonState.Image -> {
                             if (checkLocationPermission()) {
                                 voiceLauncher.launch(voiceIntent)
-                                buttonState = ButtonState.Recording
+                                buttonState = ButtonState.Connected
                             }
                             bitmapImage = null // Clear the image
                         }
@@ -555,8 +569,8 @@ fun CircularStateButton(
 
     // Define rotation animation for the icon in Processing state
     val rotationAngle by animateFloatAsState(
-        targetValue = if (currentState == ButtonState.Processing) 360f else 0f,
-        animationSpec = if (currentState == ButtonState.Processing) {
+        targetValue = if (currentState == ButtonState.Processing || currentState == ButtonState.Processing2) 360f else 0f,
+        animationSpec = if (currentState == ButtonState.Processing || currentState == ButtonState.Processing2) {
             infiniteRepeatable(
                 animation = keyframes {
                     durationMillis = 2000 // Slow rotation duration
@@ -575,6 +589,7 @@ fun CircularStateButton(
         ButtonState.Connected -> Color(0xFF0d4b48) // Dark green
         ButtonState.Recording -> Color(0xFFB22222)
         ButtonState.Processing -> Color.Blue
+        ButtonState.Processing2 -> Color(0xff990066)
         ButtonState.Image -> Color.Transparent
     }
 
@@ -583,6 +598,7 @@ fun CircularStateButton(
         ButtonState.Connected -> "Connected"
         ButtonState.Recording -> "Recording"
         ButtonState.Processing -> "Processing"
+        ButtonState.Processing2 -> "Processing2"
         ButtonState.Image -> "Image"
     }
 
@@ -591,6 +607,7 @@ fun CircularStateButton(
         ButtonState.Connected -> null
         ButtonState.Recording -> Icons.Filled.Mic
         ButtonState.Processing -> Icons.Filled.Sync
+        ButtonState.Processing2 -> Icons.Filled.Sync
         ButtonState.Image -> null
     }
 
@@ -621,7 +638,8 @@ fun CircularStateButton(
 }
 
 fun isBase64Image(data: String): Boolean {
-    return data.startsWith("data:image/png;base64,")
+    return data.startsWith("data:image")
+
 }
 
 enum class ButtonState {
@@ -629,6 +647,7 @@ enum class ButtonState {
     Connected,
     Recording,
     Processing,
+    Processing2,
     Image
 }
 
@@ -648,8 +667,8 @@ fun streamTextToSpeech(
     jsonBody.put("text", text)
 
     val voiceSettings = JSONObject()
-    voiceSettings.put("similarity_boost", 1)
-    voiceSettings.put("stability", 1)
+    voiceSettings.put("similarity_boost", 0.9)
+    voiceSettings.put("stability", 0.3)
 
     jsonBody.put("voice_settings", voiceSettings)
 
