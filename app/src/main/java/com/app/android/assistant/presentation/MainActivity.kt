@@ -11,6 +11,8 @@ import android.graphics.BitmapFactory
 import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
+import android.os.Vibrator
+import android.os.VibrationEffect
 import android.speech.RecognizerIntent
 import android.util.Base64
 import android.util.Log
@@ -46,6 +48,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -81,6 +84,8 @@ import com.app.android.assistant.presentation.MainActivity.Companion.ELEVEN_LABS
 import com.app.android.assistant.presentation.MainActivity.Companion.ELEVEN_LABS_VOICE_ID
 import com.app.android.assistant.presentation.MainActivity.Companion.SOCKET_SERVER_CONNECTION_TOKEN
 import com.app.android.assistant.presentation.MainActivity.Companion.SOCKET_URL
+import com.app.android.assistant.presentation.MainActivity.Companion.SETTING_TTS_AUTOPLAY
+import com.app.android.assistant.presentation.MainActivity.Companion.SETTING_IMAGE_AUTOPLAY
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
@@ -88,6 +93,7 @@ import io.socket.client.IO
 import io.socket.client.Socket
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -112,11 +118,14 @@ class MainActivity : ComponentActivity() {
         const val ELEVEN_LABS_API_KEY = "sk_62b236b81ca03a60812a8c1e92e6f28c985c7daa665fc10e"
         const val ELEVEN_LABS_VOICE_ID = "9BWtsMINqrJLrRacOk9x"
         const val ELEVEN_LABS_BASE_URL = "https://api.elevenlabs.io"
+        const val SETTING_TTS_AUTOPLAY = true
+        const val SETTING_IMAGE_AUTOPLAY = true
     }
 
     private val ambientCallback = object : AmbientLifecycleObserver.AmbientLifecycleCallback {
         override fun onEnterAmbient(ambientDetails: AmbientLifecycleObserver.AmbientDetails) {
             Log.d("Ambient", "Entering ambient mode")
+
         }
 
         override fun onExitAmbient() {
@@ -256,6 +265,7 @@ fun WearApp(
 ) {
     var currentScreen by remember { mutableStateOf("main") }
 
+
     when (currentScreen) {
         "main" -> WearAppWithSwipeNavigation(
             checkLocationPermission = checkLocationPermission,
@@ -307,6 +317,7 @@ fun WearAppWithSwipeNavigation(
         var latitudes by remember { mutableStateOf("") }
         var longitudes by remember { mutableStateOf("") }
         var expectedDataType by remember { mutableStateOf("") }
+        val vibrator = context.getSystemService(Vibrator::class.java)
 
         val socket = remember {
             try {
@@ -379,7 +390,11 @@ fun WearAppWithSwipeNavigation(
                         Log.d("SocketIO", "Connected to the server")
                         //Commented out to fix network change STT trigger
                         //voiceLauncher.launch(voiceIntent)
-                        buttonState = ButtonState.Connected
+                        if ( receivedMessage.isNotEmpty() ) {
+                            buttonState = ButtonState.PendingMessage
+                        } else {
+                            buttonState = ButtonState.Connected
+                        }
 
                         /** Register Client */
                         socket.emit("register", "client")
@@ -392,38 +407,51 @@ fun WearAppWithSwipeNavigation(
                             if (message != "-SOM-" && message != "-EOM-") {
                                 receivedMessage.append(message)
                             } else if (message == "-EOM-") {
-                                streamTextToSpeech(
-                                    context,
-                                    applyFilters(receivedMessage.toString())
-                                ) { byteArray ->
-                                    playAudio(byteArray) {
-                                        if (expectedDataType == "text") {
-                                            if (checkLocationPermission()) {
-                                                voiceLauncher.launch(voiceIntent)
-                                                buttonState = ButtonState.Recording
+                                if ( getBoolFromPreferences(context, "SETTING_TTS_AUTOPLAY", SETTING_TTS_AUTOPLAY) ) {
+                                    vibrator.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK))
+                                    streamTextToSpeech(
+                                        context,
+                                        applyFilters(receivedMessage.toString())
+                                    ) { byteArray ->
+                                        playAudio(byteArray) {
+                                            if (expectedDataType == "text") {
+                                                if (checkLocationPermission()) {
+                                                    voiceLauncher.launch(voiceIntent)
+                                                    buttonState = ButtonState.Recording
+                                                }
                                             }
                                         }
                                     }
-                                }
 
-                                receivedMessage.clear()
+                                    receivedMessage.clear()
+                                } else {
+                                    buttonState = ButtonState.PendingMessage
+                                    vibrator.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK))
+                                    // receivedMessage.clear()
+                                }
                             }
                         }
                     }?.on("chat_image") {
                         val message = it[0] as String
-                        Log.d("SocketIO", "Received image : $message")
+                        Log.d("SocketIO", "Received image")
 
                         if (isBase64Image(message)) {
                             Log.d("SocketIO", "Image is base64-encoded.")
+                            if ( getBoolFromPreferences(context, "SETTING_IMAGE_AUTOPLAY", SETTING_IMAGE_AUTOPLAY) ) {
+                                // Extract the base64 part
+                                val base64Data = message.substringAfter(",")
 
-                            // Extract the base64 part
-                            val base64Data = message.substringAfter(",")
+                                // Decode the base64 data and update the bitmap state
+                                bitmapImage = decodeBase64ToBitmap(base64Data)
 
-                            // Decode the base64 data and update the bitmap state
-                            bitmapImage = decodeBase64ToBitmap(base64Data)
+                                // change the state to image
+                                buttonState = ButtonState.Image
+                            } else {
+                                if (buttonState != ButtonState.Processing || buttonState != ButtonState.Processing2) {
 
-                            // change the state to image
-                            buttonState = ButtonState.Image
+                                    buttonState = ButtonState.Connected
+                                }
+                            }
                         } else {
                             Log.d("SocketIO", "Image is not base64-encoded.")
                             if (message == "loading1.gif") {
@@ -474,6 +502,19 @@ fun WearAppWithSwipeNavigation(
             }
         }
 
+        LaunchedEffect(bitmapImage) {
+            Log.d("ImageInput", "Received image from Server")
+
+
+            if (bitmapImage != null) {
+                delay(30000)
+                bitmapImage = null // Clear the image
+                // change the state to Connected
+                buttonState = ButtonState.Connected
+            }
+
+        }
+
         DisposableEffect(Unit) {
             onDispose {
                 Log.d("SocketIO", "Disconnecting from the server")
@@ -517,6 +558,25 @@ fun WearAppWithSwipeNavigation(
                             }
                             bitmapImage = null // Clear the image
                         }
+                        ButtonState.PendingMessage -> {
+                            buttonState = ButtonState.Processing
+                            vibrator.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK))
+                            streamTextToSpeech(
+                                context,
+                                applyFilters(receivedMessage.toString())
+                            ) { byteArray ->
+                                playAudio(byteArray) {
+
+                                        if (checkLocationPermission()) {
+                                            // voiceLauncher.launch(voiceIntent)
+                                            buttonState = ButtonState.Connected
+                                        }
+
+                                }
+                            }
+
+                            receivedMessage.clear()
+                        }
                     }
                 }
             )
@@ -540,8 +600,8 @@ fun CircularStateButton(
 
     // Define the size animation
     val animatedButtonSize by animateDpAsState(
-        targetValue = if (currentState == ButtonState.Connected) defaultButtonSize * 1.2f else defaultButtonSize,
-        animationSpec = if (currentState == ButtonState.Connected) {
+        targetValue = if (currentState == ButtonState.Connected || currentState == ButtonState.Image || currentState == ButtonState.PendingMessage ) defaultButtonSize * 1.2f else defaultButtonSize,
+        animationSpec = if (currentState == ButtonState.Connected || currentState == ButtonState.PendingMessage) {
             infiniteRepeatable(
                 animation = keyframes {
                     durationMillis =
@@ -591,6 +651,7 @@ fun CircularStateButton(
         ButtonState.Processing -> Color.Blue
         ButtonState.Processing2 -> Color(0xff990066)
         ButtonState.Image -> Color.Transparent
+        ButtonState.PendingMessage -> Color(0xff990066)
     }
 
     val text = when (currentState) {
@@ -600,6 +661,7 @@ fun CircularStateButton(
         ButtonState.Processing -> "Processing"
         ButtonState.Processing2 -> "Processing2"
         ButtonState.Image -> "Image"
+        ButtonState.PendingMessage -> "PendingMessage"
     }
 
     val icon: ImageVector? = when (currentState) {
@@ -609,6 +671,7 @@ fun CircularStateButton(
         ButtonState.Processing -> Icons.Filled.Sync
         ButtonState.Processing2 -> Icons.Filled.Sync
         ButtonState.Image -> null
+        ButtonState.PendingMessage -> null
     }
 
     Button(
@@ -648,7 +711,8 @@ enum class ButtonState {
     Recording,
     Processing,
     Processing2,
-    Image
+    Image,
+    PendingMessage
 }
 
 fun decodeBase64ToBitmap(base64Str: String): Bitmap? {
@@ -775,11 +839,19 @@ fun getFromPreferences(context: Context, key: String, defaultValue: String = "")
     Log.d("Preferences", "Retrieved $key: $value")
     return if (value.isNullOrBlank()) defaultValue else value.toString()}
 
+fun getBoolFromPreferences(context: Context, key: String, defaultValue: Boolean = true): Boolean {
+    val sharedPreferences = context.getSharedPreferences("WearAppSettings", Context.MODE_PRIVATE)
+    val value = sharedPreferences.getBoolean(key, true)
+    Log.d("Preferences", "Retrieved $key: $value")
+    return if (value) defaultValue else value}
+
 @Composable
 fun SettingsScreen(context: Context,navigateBack: () -> Unit) {
     var socketToken by remember { mutableStateOf(getFromPreferences(context, "SOCKET_TOKEN", SOCKET_SERVER_CONNECTION_TOKEN)) }
     var elevenLabsApiKey by remember { mutableStateOf(getFromPreferences(context, "ELEVEN_LABS_API_KEY", ELEVEN_LABS_API_KEY)) }
     var voiceId by remember { mutableStateOf(getFromPreferences(context, "VOICE_ID", ELEVEN_LABS_VOICE_ID)) }
+    var settingttsautoplay by remember { mutableStateOf(getBoolFromPreferences(context, "SETTING_TTS_AUTOPLAY", SETTING_TTS_AUTOPLAY)) }
+    var settingimageautoplay by remember { mutableStateOf(getBoolFromPreferences(context, "SETTING_IMAGE_AUTOPLAY", SETTING_IMAGE_AUTOPLAY)) }
 
     BackHandler {
         navigateBack() // Call the navigate back function when the back button is pressed
@@ -788,7 +860,7 @@ fun SettingsScreen(context: Context,navigateBack: () -> Unit) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.DarkGray)
+            .background(Color.Black)
     ) {
         // Enable vertical scrolling with padding
         Column(
@@ -800,6 +872,22 @@ fun SettingsScreen(context: Context,navigateBack: () -> Unit) {
             verticalArrangement = Arrangement.Top // Top arrangement for scrollability
         ) {
             Text(text = "Settings", color = Color.White, style = MaterialTheme.typography.title1)
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text("Autoplay TTS")
+            Checkbox(
+                checked = settingttsautoplay,
+                onCheckedChange = { settingttsautoplay = it }
+                    )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Text("Display Images")
+            Checkbox(
+                checked = settingimageautoplay,
+                onCheckedChange = { settingimageautoplay = it }
+            )
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -838,7 +926,7 @@ fun SettingsScreen(context: Context,navigateBack: () -> Unit) {
 
             // Save Button
             Button(onClick = {
-                saveApiKeys(context, socketToken, elevenLabsApiKey, voiceId)
+                saveApiKeys(context, socketToken, elevenLabsApiKey, voiceId, settingttsautoplay, settingimageautoplay)
                 // Save the API keys logic here
                 // You can pass these values back to the main app or save them in persistent storage (e.g., SharedPreferences or DataStore)
                 navigateBack()
@@ -849,12 +937,14 @@ fun SettingsScreen(context: Context,navigateBack: () -> Unit) {
     }
 }
 
-fun saveApiKeys(context: Context, socketToken: String, elevenLabsApiKey: String, voiceId: String) {
+fun saveApiKeys(context: Context, socketToken: String, elevenLabsApiKey: String, voiceId: String, settingttsautoplay: Boolean, settingimageautoplay: Boolean) {
     val sharedPreferences = context.getSharedPreferences("WearAppSettings", Context.MODE_PRIVATE)
     with(sharedPreferences.edit()) {
         putString("SOCKET_TOKEN", socketToken)
         putString("ELEVEN_LABS_API_KEY", elevenLabsApiKey)
         putString("VOICE_ID", voiceId)
+        putBoolean("SETTING_TTS_AUTOPLAY", settingttsautoplay)
+        putBoolean("SETTING_IMAGE_AUTOPLAY", settingimageautoplay)
         apply()
     }
 }
