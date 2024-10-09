@@ -4,7 +4,7 @@ Bugs and Features:
 
 - [ ] App crashes when location returns null (Line 360)
 - [ ] If watch sleeps when STT screen is active you have to swipe back.  Can we keep the watch awake during STT.
-- [ ] Image needs to be set to null on button press for all states
+- [X] Image needs to be set to null on button press for all states
 - [ ] Background instability
 
 
@@ -12,11 +12,11 @@ Bugs and Features:
 **Features:**
 
 - **User Interface:**
-  - [ ] Resize image buttons to 100% screen width/height
+  - [X] Resize image buttons to 100% screen width/height
   - [ ] Update ambient mode appearance (e.g., simple clock analog hands with color denoting mimicing connected state)
   - [X] Square image orientation
   - [ ] Adjust max tokens / temp in settings
-  - [ ] Add toggle for image display in settings
+  - [X] Add toggle for image display in settings
   - [ ] Real notifications when app is in background and message is received
   - [ ] Performance and battery optimization issues
   - [ ] Pinch zoom image
