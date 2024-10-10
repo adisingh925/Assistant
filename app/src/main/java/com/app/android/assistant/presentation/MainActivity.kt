@@ -3,8 +3,12 @@ package com.app.android.assistant.presentation
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothHeadset
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -16,6 +20,7 @@ import android.os.VibrationEffect
 import android.speech.RecognizerIntent
 import android.util.Base64
 import android.util.Log
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -106,6 +111,20 @@ import java.io.File
 import java.io.IOException
 import java.util.Locale
 
+
+
+class ChargingReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context?, intent: Intent?) {
+        if (intent?.action == Intent.ACTION_POWER_CONNECTED) {
+            // Exit the app
+            Log.d("Power", "Charger connected exiting")
+            if (context is Activity) {
+                context.finishAffinity() // Finish all activities and exit
+            }
+        }
+    }
+}
+
 class MainActivity : ComponentActivity() {
 
     private var shouldShowPermissionScreen =
@@ -138,11 +157,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private val ambientObserver = AmbientLifecycleObserver(this, ambientCallback)
+    private lateinit var chargingReceiver: ChargingReceiver
 
     @RequiresApi(Build.VERSION_CODES.S)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         lifecycle.addObserver(ambientObserver)
+        chargingReceiver = ChargingReceiver()
+        ScreenManager.setActivity(this)
 
         setContent {
             if (shouldShowPermissionScreen) {
@@ -153,6 +175,17 @@ class MainActivity : ComponentActivity() {
                 requestPermissions() // Auto-request permissions on app start
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val filter = IntentFilter(Intent.ACTION_POWER_CONNECTED)
+        registerReceiver(chargingReceiver, filter)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        unregisterReceiver(chargingReceiver)
     }
 
     // Automatically request both permissions on start
@@ -346,6 +379,7 @@ fun WearAppWithSwipeNavigation(
             if (activityResult.resultCode == Activity.RESULT_CANCELED) {
                 Log.d("VoiceInput", "Voice input canceled.")
                 buttonState = ButtonState.Connected
+                ScreenManager.clearScreenOn()
             } else if (activityResult.resultCode == Activity.RESULT_OK) {
                 activityResult.data?.let { data ->
                     val results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
@@ -390,10 +424,10 @@ fun WearAppWithSwipeNavigation(
                         Log.d("SocketIO", "Connected to the server")
                         //Commented out to fix network change STT trigger
                         //voiceLauncher.launch(voiceIntent)
-                        if ( receivedMessage.isNotEmpty() ) {
-                            buttonState = ButtonState.PendingMessage
+                        buttonState = if ( receivedMessage.isNotEmpty() ) {
+                            ButtonState.PendingMessage
                         } else {
-                            buttonState = ButtonState.Connected
+                            ButtonState.Connected
                         }
 
                         /** Register Client */
@@ -403,11 +437,12 @@ fun WearAppWithSwipeNavigation(
                     }?.on("chat_stream") {
                         val message = it[0] as String
                         if (message.isNotEmpty()) {
-                            Log.d("SocketIO", "Received message : $message")
+                            // Log.d("SocketIO", "Received message : $message")
                             if (message != "-SOM-" && message != "-EOM-") {
                                 receivedMessage.append(message)
                             } else if (message == "-EOM-") {
-                                if ( getBoolFromPreferences(context, "SETTING_TTS_AUTOPLAY", SETTING_TTS_AUTOPLAY) ) {
+
+                                if ( getBoolFromPreferences(context, "SETTING_TTS_AUTOPLAY", SETTING_TTS_AUTOPLAY) || isBluetoothHeadsetConnected() ) {
                                     vibrator.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK))
                                     streamTextToSpeech(
                                         context,
@@ -416,8 +451,8 @@ fun WearAppWithSwipeNavigation(
                                         playAudio(byteArray) {
                                             if (expectedDataType == "text") {
                                                 if (checkLocationPermission()) {
-                                                    voiceLauncher.launch(voiceIntent)
-                                                    buttonState = ButtonState.Recording
+                                                    // voiceLauncher.launch(voiceIntent)
+                                                    buttonState = ButtonState.Connected
                                                 }
                                             }
                                         }
@@ -448,7 +483,7 @@ fun WearAppWithSwipeNavigation(
                                 buttonState = ButtonState.Image
                             } else {
                                 if (buttonState != ButtonState.Processing || buttonState != ButtonState.Processing2) {
-
+                                    ScreenManager.clearScreenOn()
                                     buttonState = ButtonState.Connected
                                 }
                             }
@@ -456,11 +491,13 @@ fun WearAppWithSwipeNavigation(
                             Log.d("SocketIO", "Image is not base64-encoded.")
                             if (message == "loading1.gif") {
                                 buttonState = ButtonState.Processing
+                                ScreenManager.clearScreenOn()
                                 expectedDataType = "text"
                                 Log.d("SocketIO", "Setting app state to Processing")
                             }
                             if (message == "loading2.gif") {
                                 buttonState = ButtonState.Processing2
+                                ScreenManager.clearScreenOn()
                                 expectedDataType = "image"
                                 Log.d("SocketIO", "Setting app state to Processing2")
                             }
@@ -499,6 +536,7 @@ fun WearAppWithSwipeNavigation(
 
                 // change the state to processing
                 buttonState = ButtonState.Processing
+                ScreenManager.clearScreenOn()
             }
         }
 
@@ -514,6 +552,7 @@ fun WearAppWithSwipeNavigation(
             }
 
         }
+
 
         DisposableEffect(Unit) {
             onDispose {
@@ -538,6 +577,7 @@ fun WearAppWithSwipeNavigation(
                         ButtonState.Connecting -> Unit // Do nothing
                         ButtonState.Connected -> {
                             if (checkLocationPermission()) {
+                                ScreenManager.keepScreenOn()
                                 voiceLauncher.launch(voiceIntent)
                                 buttonState = ButtonState.Recording
                             }
@@ -547,14 +587,21 @@ fun WearAppWithSwipeNavigation(
                             buttonState = ButtonState.Processing
                         }
 
-                        ButtonState.Processing -> Unit
+                        ButtonState.Processing -> {
+                            buttonState = ButtonState.Connected
+                            ScreenManager.clearScreenOn()
+                        }
 
-                        ButtonState.Processing2 -> Unit
+                        ButtonState.Processing2 -> {
+                            buttonState = ButtonState.Connected
+                            ScreenManager.clearScreenOn()
+                        }
 
                         ButtonState.Image -> {
                             if (checkLocationPermission()) {
+                                ScreenManager.keepScreenOn()
                                 voiceLauncher.launch(voiceIntent)
-                                buttonState = ButtonState.Connected
+                                buttonState = ButtonState.Recording
                             }
                             bitmapImage = null // Clear the image
                         }
@@ -833,6 +880,15 @@ private fun getTextBeforeMarker(data: String, marker: String): String {
     }
 }
 
+
+fun isBluetoothHeadsetConnected(): Boolean {
+    val mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
+    Log.d("Bluetooth", "Headset is: ${mBluetoothAdapter.getProfileConnectionState(BluetoothHeadset.HEADSET)}")
+    return (mBluetoothAdapter != null && mBluetoothAdapter.isEnabled
+            && mBluetoothAdapter.getProfileConnectionState(BluetoothHeadset.HEADSET) == BluetoothHeadset.STATE_CONNECTED)
+}
+
+
 fun getFromPreferences(context: Context, key: String, defaultValue: String = ""): String {
     val sharedPreferences = context.getSharedPreferences("WearAppSettings", Context.MODE_PRIVATE)
     val value = sharedPreferences.getString(key, "")
@@ -949,3 +1005,20 @@ fun saveApiKeys(context: Context, socketToken: String, elevenLabsApiKey: String,
     }
 }
 
+object ScreenManager {
+    private var activity: Activity? = null
+
+    fun setActivity(activity: Activity) {
+        this.activity = activity
+    }
+
+    fun keepScreenOn() {
+        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        Log.d("Screen", "Setting Screen WAKE")
+    }
+
+    fun clearScreenOn() {
+        activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        Log.d("Screen", "Clearing Screen WAKE")
+    }
+}
