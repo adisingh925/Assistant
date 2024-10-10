@@ -27,6 +27,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
+import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateDpAsState
@@ -89,6 +90,7 @@ import com.app.android.assistant.presentation.MainActivity.Companion.ELEVEN_LABS
 import com.app.android.assistant.presentation.MainActivity.Companion.ELEVEN_LABS_VOICE_ID
 import com.app.android.assistant.presentation.MainActivity.Companion.SOCKET_SERVER_CONNECTION_TOKEN
 import com.app.android.assistant.presentation.MainActivity.Companion.SOCKET_URL
+import com.app.android.assistant.presentation.MainActivity.Companion.SETTING_STT_AUTOSTART
 import com.app.android.assistant.presentation.MainActivity.Companion.SETTING_TTS_AUTOPLAY
 import com.app.android.assistant.presentation.MainActivity.Companion.SETTING_IMAGE_AUTOPLAY
 import com.google.android.gms.location.LocationServices
@@ -96,7 +98,9 @@ import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
 import io.socket.client.IO
 import io.socket.client.Socket
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import okhttp3.Call
@@ -111,7 +115,7 @@ import java.io.File
 import java.io.IOException
 import java.util.Locale
 
-
+var mediaPlayer: MediaPlayer? = null
 
 class ChargingReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context?, intent: Intent?) {
@@ -125,6 +129,53 @@ class ChargingReceiver : BroadcastReceiver() {
     }
 }
 
+interface OnBluetoothHeadsetConnectedListener {
+    fun onConnected()
+}
+
+
+class BluetoothReceiver(private val listener: OnBluetoothHeadsetConnectedListener) : BroadcastReceiver() {
+    override fun onReceive(context: Context?, intent: Intent?) {
+        // Check if the headset is connected
+        if (isBluetoothHeadsetConnected()) {
+            listener.onConnected()
+        }
+    }
+
+    private fun isBluetoothHeadsetConnected(): Boolean {
+        val mBluetoothAdapter = BluetoothAdapter.getDefaultAdapter()
+        return (mBluetoothAdapter != null && mBluetoothAdapter.isEnabled
+                && mBluetoothAdapter.getProfileConnectionState(BluetoothHeadset.HEADSET) == BluetoothHeadset.STATE_CONNECTED)
+    }
+}
+
+
+class HeadsetActivity : AppCompatActivity(), OnBluetoothHeadsetConnectedListener {
+
+    private lateinit var bluetoothReceiver: BluetoothReceiver
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        bluetoothReceiver = BluetoothReceiver(this)
+
+        val filter = IntentFilter(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
+        registerReceiver(bluetoothReceiver, filter)
+    }
+
+    override fun onConnected() {
+        // This will be called every time the headset connects
+        Log.d("Bluetooth", "Headset is connected!")
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        unregisterReceiver(bluetoothReceiver)
+    }
+}
+
+
+
 class MainActivity : ComponentActivity() {
 
     private var shouldShowPermissionScreen =
@@ -137,6 +188,7 @@ class MainActivity : ComponentActivity() {
         const val ELEVEN_LABS_API_KEY = "sk_62b236b81ca03a60812a8c1e92e6f28c985c7daa665fc10e"
         const val ELEVEN_LABS_VOICE_ID = "9BWtsMINqrJLrRacOk9x"
         const val ELEVEN_LABS_BASE_URL = "https://api.elevenlabs.io"
+        const val SETTING_STT_AUTOSTART = true
         const val SETTING_TTS_AUTOPLAY = true
         const val SETTING_IMAGE_AUTOPLAY = true
     }
@@ -357,8 +409,8 @@ fun WearAppWithSwipeNavigation(
                 val options = IO.Options().apply {
                     auth = mapOf("token" to getFromPreferences(context, "SOCKET_TOKEN", SOCKET_SERVER_CONNECTION_TOKEN))
                 }
-                Log.d("SocketIO", "Connecting to Socket Server...")
-                IO.socket(SOCKET_URL, options)
+                Log.d("SocketIO", "Connecting to Socket Server: ${getFromPreferences(context, "SOCKET_URL", SOCKET_URL)}")
+                IO.socket(getFromPreferences(context, "SOCKET_URL", SOCKET_URL), options)
             } catch (e: Exception) {
                 e.printStackTrace()
                 null
@@ -383,10 +435,23 @@ fun WearAppWithSwipeNavigation(
             } else if (activityResult.resultCode == Activity.RESULT_OK) {
                 activityResult.data?.let { data ->
                     val results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
-                    textForVoiceInput = results?.get(0) ?: "None"
+                    textForVoiceInput = results?.get(0) ?: ""
+                    ScreenManager.clearScreenOn()
                 }
             }
         }
+
+        fun assessInteractionMode() {
+            if (getBoolFromPreferences(context, "SETTING_STT_AUTOSTART", SETTING_STT_AUTOSTART)) {
+                if (checkLocationPermission()) {
+                    voiceLauncher.launch(voiceIntent)
+                    buttonState = ButtonState.Recording
+                    }
+                } else {
+                buttonState = ButtonState.Connected
+                }
+        }
+
 
         /**
          * Fetch the user's location in separate thread
@@ -402,12 +467,20 @@ fun WearAppWithSwipeNavigation(
                     ).addOnCompleteListener {
                         if (it.isSuccessful) {
                             val fetchedLocation = it.result
-                            latitudes = fetchedLocation.latitude.toString()
-                            longitudes = fetchedLocation.longitude.toString()
-                            Log.d(
-                                "Location",
-                                "Fetched location: ${fetchedLocation.latitude}, ${fetchedLocation.longitude}"
-                            )
+
+                            if (fetchedLocation != null) {
+                                latitudes = fetchedLocation.latitude.toString()
+                                longitudes = fetchedLocation.longitude.toString()
+                                Log.d(
+                                    "Location",
+                                    "Fetched location: ${fetchedLocation.latitude}, ${fetchedLocation.longitude}"
+                                )
+                            } else {
+                                Log.e("Location", "Fetched location is null.")
+                                // Handle the case when fetchedLocation is null, e.g., set default values or notify the user
+                                latitudes = "0"
+                                longitudes = "0"
+                            }
                         }
                     }
                 }
@@ -421,10 +494,8 @@ fun WearAppWithSwipeNavigation(
             if (socket != null) {
                 if (!socket.connected()) {
                     socket.on(Socket.EVENT_CONNECT) {
-                        Log.d("SocketIO", "Connected to the server")
-                        //Commented out to fix network change STT trigger
-                        //voiceLauncher.launch(voiceIntent)
-                        buttonState = if ( receivedMessage.isNotEmpty() ) {
+                        Log.d("SocketIO", "Connected to the server ")
+                            buttonState = if ( receivedMessage.isNotEmpty() ) {
                             ButtonState.PendingMessage
                         } else {
                             ButtonState.Connected
@@ -448,11 +519,12 @@ fun WearAppWithSwipeNavigation(
                                         context,
                                         applyFilters(receivedMessage.toString())
                                     ) { byteArray ->
-                                        playAudio(byteArray) {
-                                            if (expectedDataType == "text") {
-                                                if (checkLocationPermission()) {
-                                                    // voiceLauncher.launch(voiceIntent)
-                                                    buttonState = ButtonState.Connected
+                                        GlobalScope.launch(Dispatchers.IO) {
+                                            playAudio(byteArray) {
+                                                if (expectedDataType == "text") {
+                                                    if (checkLocationPermission()) {
+                                                        assessInteractionMode()
+                                                    }
                                                 }
                                             }
                                         }
@@ -462,7 +534,6 @@ fun WearAppWithSwipeNavigation(
                                 } else {
                                     buttonState = ButtonState.PendingMessage
                                     vibrator.vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK))
-                                    // receivedMessage.clear()
                                 }
                             }
                         }
@@ -479,11 +550,9 @@ fun WearAppWithSwipeNavigation(
                                 // Decode the base64 data and update the bitmap state
                                 bitmapImage = decodeBase64ToBitmap(base64Data)
 
-                                // change the state to image
-                                buttonState = ButtonState.Image
+
                             } else {
                                 if (buttonState != ButtonState.Processing || buttonState != ButtonState.Processing2) {
-                                    ScreenManager.clearScreenOn()
                                     buttonState = ButtonState.Connected
                                 }
                             }
@@ -491,13 +560,11 @@ fun WearAppWithSwipeNavigation(
                             Log.d("SocketIO", "Image is not base64-encoded.")
                             if (message == "loading1.gif") {
                                 buttonState = ButtonState.Processing
-                                ScreenManager.clearScreenOn()
                                 expectedDataType = "text"
                                 Log.d("SocketIO", "Setting app state to Processing")
                             }
                             if (message == "loading2.gif") {
                                 buttonState = ButtonState.Processing2
-                                ScreenManager.clearScreenOn()
                                 expectedDataType = "image"
                                 Log.d("SocketIO", "Setting app state to Processing2")
                             }
@@ -513,11 +580,6 @@ fun WearAppWithSwipeNavigation(
         LaunchedEffect(textForVoiceInput) {
             Log.d("VoiceInput", "Received text from User : $textForVoiceInput")
 
-//            expectedDataType = if (textForVoiceInput.contains("image", ignoreCase = true)) {
-//                "image"
-//            } else {
-//                "text"
-//            }
 
             if (textForVoiceInput.isNotEmpty()) {
                 socket?.emit(
@@ -534,9 +596,7 @@ fun WearAppWithSwipeNavigation(
                     "${latitudes},${longitudes}"
                 )
 
-                // change the state to processing
-                buttonState = ButtonState.Processing
-                ScreenManager.clearScreenOn()
+
             }
         }
 
@@ -545,6 +605,8 @@ fun WearAppWithSwipeNavigation(
 
 
             if (bitmapImage != null) {
+                // change the state to image
+                buttonState = ButtonState.Image
                 delay(30000)
                 bitmapImage = null // Clear the image
                 // change the state to Connected
@@ -578,8 +640,9 @@ fun WearAppWithSwipeNavigation(
                         ButtonState.Connected -> {
                             if (checkLocationPermission()) {
                                 ScreenManager.keepScreenOn()
-                                voiceLauncher.launch(voiceIntent)
                                 buttonState = ButtonState.Recording
+                                voiceLauncher.launch(voiceIntent)
+
                             }
                         }
 
@@ -588,22 +651,22 @@ fun WearAppWithSwipeNavigation(
                         }
 
                         ButtonState.Processing -> {
+                            stopAudio()
                             buttonState = ButtonState.Connected
-                            ScreenManager.clearScreenOn()
                         }
 
                         ButtonState.Processing2 -> {
+                            stopAudio()
                             buttonState = ButtonState.Connected
-                            ScreenManager.clearScreenOn()
                         }
 
                         ButtonState.Image -> {
                             if (checkLocationPermission()) {
                                 ScreenManager.keepScreenOn()
-                                voiceLauncher.launch(voiceIntent)
                                 buttonState = ButtonState.Recording
+                                voiceLauncher.launch(voiceIntent)
+
                             }
-                            bitmapImage = null // Clear the image
                         }
                         ButtonState.PendingMessage -> {
                             buttonState = ButtonState.Processing
@@ -614,10 +677,7 @@ fun WearAppWithSwipeNavigation(
                             ) { byteArray ->
                                 playAudio(byteArray) {
 
-                                        if (checkLocationPermission()) {
-                                            // voiceLauncher.launch(voiceIntent)
-                                            buttonState = ButtonState.Connected
-                                        }
+                                    buttonState = ButtonState.Connected
 
                                 }
                             }
@@ -767,6 +827,7 @@ fun decodeBase64ToBitmap(base64Str: String): Bitmap? {
     return BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
 }
 
+
 fun streamTextToSpeech(
     context: Context,
     text: String,
@@ -798,6 +859,7 @@ fun streamTextToSpeech(
 
         override fun onResponse(call: Call, response: Response) {
             if (response.isSuccessful) {
+                Log.d("TTS-Stream", "Stream chunk received")
                 response.body?.byteStream()?.use { inputStream ->
                     val byteArray =
                         inputStream.readBytes() // Read the input stream into a byte array
@@ -811,35 +873,64 @@ fun streamTextToSpeech(
     })
 }
 
+
 // Function to play the audio from the received URL
 fun playAudio(byteArray: ByteArray?, onCompletion: () -> Unit) {
     byteArray?.let {
-        try {
-            val mediaPlayer = MediaPlayer()
-            // Create a temporary file to hold the audio
-            val tempFile = File.createTempFile("tts_audio", ".mp3").apply {
-                deleteOnExit() // Ensure it's deleted when the app exits
-            }
+        if (mediaPlayer == null) {
+            try {
+                Log.d("AudioPlayback", "Starting to play audio.")
+                mediaPlayer = MediaPlayer()
 
-            tempFile.outputStream().use { outputStream ->
-                outputStream.write(it) // Write the byte array to the file
-            }
+                // Create a temporary file to hold the audio
+                val tempFile = File.createTempFile("tts_audio", ".mp3").apply {
+                    deleteOnExit() // Ensure it's deleted when the app exits
+                }
+                Log.d("AudioPlayback", "Temporary file created at: ${tempFile.absolutePath}")
 
-            mediaPlayer.setDataSource(tempFile.absolutePath)
-            mediaPlayer.prepareAsync()
-            mediaPlayer.setOnPreparedListener { player ->
-                player.start()
-            }
-            mediaPlayer.setOnCompletionListener {
-                mediaPlayer.release() // Release MediaPlayer resources
+                // Write the byte array to the file
+                tempFile.outputStream().use { outputStream ->
+                    Log.d("AudioPlayback", "Writing byte array to temporary file.")
+                    outputStream.write(it)
+                    Log.d("AudioPlayback", "Successfully wrote byte array to file.")
+                }
+
+                mediaPlayer!!.setDataSource(tempFile.absolutePath)
+                mediaPlayer!!.prepareAsync()
+
+                mediaPlayer!!.setOnPreparedListener { player ->
+                    Log.d("AudioPlayback", "MediaPlayer is prepared, starting playback.")
+                    player.start()
+                }
+
+                mediaPlayer!!.setOnCompletionListener {
+                    Log.d("AudioPlayback", "Playback completed, releasing MediaPlayer.")
+                    mediaPlayer!!.release() // Release MediaPlayer resources
+                    onCompletion()
+                }
+
+                mediaPlayer!!.setOnErrorListener { player, what, extra ->
+                    Log.e("AudioPlayback", "MediaPlayer error occurred: what=$what, extra=$extra")
+                    player.release()
+                    onCompletion()
+                    true // Indicates that we handled the error
+                }
+            } catch (e: Exception) {
+                Log.e("MediaPlayerError", "Error playing audio: ${e.localizedMessage}", e)
                 onCompletion()
             }
-        } catch (e: Exception) {
-            Log.e("MediaPlayerError", "Error playing audio: ${e.localizedMessage}")
-            onCompletion()
         }
     } ?: run {
         Log.e("TTS", "Audio byte array is null, cannot play audio.")
+    }
+}
+
+fun stopAudio() {
+    // Cancel playback on the Main thread
+    CoroutineScope(Dispatchers.Main).launch {
+        mediaPlayer?.stop()
+        mediaPlayer?.release() // Clean up resources
+        mediaPlayer = null
     }
 }
 
@@ -903,9 +994,11 @@ fun getBoolFromPreferences(context: Context, key: String, defaultValue: Boolean 
 
 @Composable
 fun SettingsScreen(context: Context,navigateBack: () -> Unit) {
+    var socketUrl by remember { mutableStateOf(getFromPreferences(context, "SOCKET_URL", SOCKET_URL)) }
     var socketToken by remember { mutableStateOf(getFromPreferences(context, "SOCKET_TOKEN", SOCKET_SERVER_CONNECTION_TOKEN)) }
     var elevenLabsApiKey by remember { mutableStateOf(getFromPreferences(context, "ELEVEN_LABS_API_KEY", ELEVEN_LABS_API_KEY)) }
     var voiceId by remember { mutableStateOf(getFromPreferences(context, "VOICE_ID", ELEVEN_LABS_VOICE_ID)) }
+    var settingsttautostart by remember { mutableStateOf(getBoolFromPreferences(context, "SETTING_STT_AUTOSTART", SETTING_STT_AUTOSTART)) }
     var settingttsautoplay by remember { mutableStateOf(getBoolFromPreferences(context, "SETTING_TTS_AUTOPLAY", SETTING_TTS_AUTOPLAY)) }
     var settingimageautoplay by remember { mutableStateOf(getBoolFromPreferences(context, "SETTING_IMAGE_AUTOPLAY", SETTING_IMAGE_AUTOPLAY)) }
 
@@ -931,6 +1024,14 @@ fun SettingsScreen(context: Context,navigateBack: () -> Unit) {
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            Text("Auto Restart STT")
+            Checkbox(
+                checked = settingsttautostart,
+                onCheckedChange = { settingsttautostart = it }
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
             Text("Autoplay TTS")
             Checkbox(
                 checked = settingttsautoplay,
@@ -943,6 +1044,17 @@ fun SettingsScreen(context: Context,navigateBack: () -> Unit) {
             Checkbox(
                 checked = settingimageautoplay,
                 onCheckedChange = { settingimageautoplay = it }
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Socket Token Input Field
+            OutlinedTextField(
+                value = socketUrl,
+                onValueChange = { socketUrl = it },
+                label = { Text("Socket URL") },
+                textStyle = TextStyle(color = Color.White, fontWeight = FontWeight.Bold),
+                singleLine = true
             )
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -982,7 +1094,7 @@ fun SettingsScreen(context: Context,navigateBack: () -> Unit) {
 
             // Save Button
             Button(onClick = {
-                saveApiKeys(context, socketToken, elevenLabsApiKey, voiceId, settingttsautoplay, settingimageautoplay)
+                saveApiKeys(context, socketUrl, socketToken, elevenLabsApiKey, voiceId, settingsttautostart, settingttsautoplay, settingimageautoplay)
                 // Save the API keys logic here
                 // You can pass these values back to the main app or save them in persistent storage (e.g., SharedPreferences or DataStore)
                 navigateBack()
@@ -993,12 +1105,14 @@ fun SettingsScreen(context: Context,navigateBack: () -> Unit) {
     }
 }
 
-fun saveApiKeys(context: Context, socketToken: String, elevenLabsApiKey: String, voiceId: String, settingttsautoplay: Boolean, settingimageautoplay: Boolean) {
+fun saveApiKeys(context: Context, socketUrl: String, socketToken: String, elevenLabsApiKey: String, voiceId: String, settingsttautostart: Boolean, settingttsautoplay: Boolean, settingimageautoplay: Boolean) {
     val sharedPreferences = context.getSharedPreferences("WearAppSettings", Context.MODE_PRIVATE)
     with(sharedPreferences.edit()) {
+        putString("SOCKET_URL", socketUrl)
         putString("SOCKET_TOKEN", socketToken)
         putString("ELEVEN_LABS_API_KEY", elevenLabsApiKey)
         putString("VOICE_ID", voiceId)
+        putBoolean("SETTING_STT_AUTOSTART", settingsttautostart)
         putBoolean("SETTING_TTS_AUTOPLAY", settingttsautoplay)
         putBoolean("SETTING_IMAGE_AUTOPLAY", settingimageautoplay)
         apply()

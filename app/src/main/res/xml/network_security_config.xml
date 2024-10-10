@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="false"> <!-- Deny cleartext traffic -->
+        <domain includeSubdomains="true">ws.dreadtools.com</domain> <!-- Allow example.com -->
+        <domain includeSubdomains="true">ws.nobrandsan.com</domain> <!-- Allow api.example.com -->
+
+
+    </domain-config>
+</network-security-config>

@@ -14,6 +14,7 @@ socketIoClient = "2.1.1"
 playServicesLocation = "21.3.0"
 wear = "1.3.0"
 material3Android = "1.3.0"
+appcompat = "1.7.0"
 
 [libraries]
 material-icons-extended = { module = "androidx.compose.material:material-icons-extended", version.ref = "materialIconsExtended" }
@@ -34,6 +35,7 @@ core-splashscreen = { group = "androidx.core", name = "core-splashscreen", versi
 play-services-location = { group = "com.google.android.gms", name = "play-services-location", version.ref = "playServicesLocation" }
 wear = { group = "androidx.wear", name = "wear", version.ref = "wear" }
 material3-android = { group = "androidx.compose.material3", name = "material3-android", version.ref = "material3Android" }
+appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
